@@ -1,0 +1,81 @@
+---
+title: "Pseudo-bulk RNA-seq"
+author: "Toshiyuki Itai"
+date: "7/14/2022"
+output: html_document
+---
+
+```{r}
+#Clean the environment
+rm(list=ls())
+```
+
+```{r}
+# Load libraries
+library(ExperimentHub)
+library(Seurat)
+library(DESeq2)
+library(tidyverse)
+library(SingleR) #to calculate TPM
+library(readr)
+```
+
+Load data
+```{r}
+View(e11.5@meta.data)
+```
+
+```{r}
+mouse_gene <- read_tsv("/Users/titai/Documents/Research_Projects/Cleft/0_single_cell_analysis/E11.5/genes.tsv", col_names = FALSE)
+colnames(mouse_gene) <- c("ensembl_id", "gene")
+```
+
+Add cell-type data to meta.data
+```{r}
+#getting cell-type data
+class <- as.data.frame(Idents(e11.5))
+```
+```{r}
+#add cell-type data to meta.data
+e11.5$cell_type <- class$`Idents(e11.5)`
+```
+
+Aggregate cells into a cluster by cell-type
+```{r}
+DefaultAssay(e11.5) #to fill the assays
+```
+
+```{r}
+cts_e11.5  <- AggregateExpression(e11.5, 
+                                 group.by = c("cell_type"),
+                                 assays = "RNA",
+                                 slot = "counts",
+                                 return.seurat = FALSE)
+```
+
+```{r}
+cts_e11.5 <- cts_e11.5$RNA
+cts_e11.5 <- as.data.frame(cts_e11.5)
+```
+
+```{r}
+mes <- as.data.frame(cts_e11.5$mesenchyme, row.names = row.names(cts_e11.5))
+```
+```{r}
+mes$gene <- rownames(mes)
+```
+```{r}
+mes <- inner_join(mes, mouse_gene, by = "gene")
+```
+```{r}
+de <- select(mes, c("cts_e11.5$mesenchyme"))
+```
+
+
+
+
+
+
+
+
+

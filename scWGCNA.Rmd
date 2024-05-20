@@ -1,0 +1,328 @@
+---
+title: "scWGCNA"
+author: "Toshiyuki Itai"
+date: "8/23/2022"
+output: html_document
+---
+
+```{r}
+#If you want to clean the environment
+rm(list=ls())
+```
+
+URL
+https://smorabit.github.io/hdWGCNA/index.html
+
+```{r}
+# install BiocManager
+install.packages("BiocManager")
+
+# install Bioconductor core packages
+BiocManager::install()
+
+# install additional packages:
+install.packages(c("Seurat", "WGCNA", "igraph", "devtools"))
+```
+```{r}
+devtools::install_github('smorabit/hdWGCNA', ref='dev')
+```
+
+Load the dataset and required libraries.
+```{r}
+# single-cell analysis package
+library(Seurat)
+
+# plotting and data science packages
+library(tidyverse)
+library(cowplot)
+library(patchwork)
+
+# co-expression network analysis packages:
+library(WGCNA)
+library(hdWGCNA)
+
+# using the cowplot theme for ggplot
+theme_set(theme_cowplot())
+
+# set random seed for reproducibility
+set.seed(12345)
+```
+
+```{r}
+library(igraph)
+library(stringr)
+```
+
+```{r}
+# load the Zhou et al snRNA-seq dataset
+seurat_obj <- load('C57LJ_20220727.RData')
+```
+
+```{r}
+head(e11.5@meta.data)
+```
+```{r}
+unique(e11.5$cluster)
+```
+```{r}
+cluster <- as.vector(e11.5$cluster)
+```
+```{r}
+length(cluster[cluster == "ectoderm"])
+length(cluster[cluster == "mesenchyme"])
+length(cluster[cluster == "endothelium"])
+length(cluster[cluster == "red blood cells"])
+length(cluster[cluster == "other blood cells"])
+```
+
+
+```{r}
+p <- DimPlot(e11.5, group.by='cluster', label=TRUE) +
+   umap_theme() + ggtitle('e11.5') + NoLegend()
+
+p
+```
+Set up Seurat object for WGCNA
+```{r}
+e11.5 <- SetupForWGCNA(
+  e11.5,
+  gene_select = "fraction", # the gene selection approach
+  fraction = 0.05, # fraction of cells that a gene needs to be expressed in order to be included
+  wgcna_name = "e11.5-hdWGCNA" # the name of the hdWGCNA experiment
+)
+```
+
+Construct metacells
+```{r}
+# construct metacells  in each group
+e11.5 <- MetacellsByGroups(
+  seurat_obj = e11.5,
+  group.by = c("cluster"), # specify the columns in seurat_obj@meta.data to group by
+  k = 25, # nearest-neighbors parameter
+  max_shared = 10, # maximum number of shared cells between two metacells
+  ident.group = 'cluster' # set the Idents of the metacell seurat object
+)
+
+# normalize metacell expression matrix:
+e11.5 <- NormalizeMetacells(e11.5)
+```
+
+Transpose the expression matrix
+```{r}
+e11.5 <- SetDatExpr(
+  e11.5,
+  group_name = "mesenchyme", # the name of the group of interest in the group.by column
+  group.by='cluster' # the metadata column containing the cell type info. This same column should have also been used in MetacellsByGroups
+)
+```
+
+Select soft-power threshold
+```{r}
+# Test different soft powers:
+e11.5 <- TestSoftPowers(
+  e11.5,
+  setDatExpr = FALSE, # set this to FALSE since we did this above
+)
+
+# plot the results:
+plot_list <- PlotSoftPowers(e11.5)
+
+# assemble with patchwork
+wrap_plots(plot_list, ncol=2)
+```
+
+```{r}
+power_table <- GetPowerTable(e11.5)
+#nrow(power_table)
+head(power_table)
+```
+
+```{r}
+# construct co-expression network:
+e11.5 <- ConstructNetwork(
+  e11.5, soft_power=5,
+  setDatExpr=FALSE,
+  tom_name = 'mesenchyme', # name of the topoligical overlap matrix written to disk
+  overwrite_tom = TRUE
+)
+```
+
+```{r}
+PlotDendrogram(e11.5, main='Mesenchyme hdWGCNA Dendrogram')
+```
+
+Compute harmonized module eigengenes
+```{r}
+# need to run ScaleData first or else harmony throws an error:
+e11.5 <- ScaleData(e11.5, features=VariableFeatures(e11.5))
+
+# compute all MEs in the full single-cell dataset
+e11.5 <- ModuleEigengenes(e11.5)
+```
+
+```{r}
+# harmonized module eigengenes:
+hMEs <- GetMEs(e11.5)
+
+# module eigengenes:
+MEs <- GetMEs(e11.5, harmonized=FALSE)
+```
+
+Compute module connectivity
+```{r}
+# compute eigengene-based connectivity (kME):
+e11.5 <- ModuleConnectivity(
+  e11.5,
+  group.by = 'cluster', group_name = 'mesenchyme'
+)
+```
+
+```{r}
+# rename the modules
+e11.5 <- ResetModuleNames(
+  e11.5,
+  new_name = "mesenchyme-M"
+)
+```
+
+```{r}
+# plot genes ranked by kME for each module
+p <- PlotKMEs(e11.5, ncol=5)
+
+p
+```
+
+Getting the module assignment table
+```{r}
+# get the module assignment table:
+modules <- GetModules(e11.5)
+
+# show the first 6 columns:
+head(modules[,1:6])
+```
+
+```{r}
+module_genes <- modules %>% filter(module != "grey")
+nrow(module_genes)
+```
+
+```{r}
+write.csv(module_genes, file = "modules.mes.csv")
+```
+
+
+Compute hub gene signature scores
+```{r}
+# compute gene scoring for the top 25 hub genes by kME for each module
+# with Seurat method
+e11.5 <- ModuleExprScore(
+  e11.5,
+  n_genes = 25,
+  method='Seurat'
+)
+
+```
+
+Module Feature Plots
+```{r}
+# make a featureplot of hMEs for each module
+plot_list <- ModuleFeaturePlot(
+  e11.5,
+  features='hMEs', # plot the hMEs
+  order=TRUE # order so the points with highest hMEs are on top
+)
+
+# stitch together with patchwork
+wrap_plots(plot_list, ncol=6)
+```
+
+```{r}
+# make a featureplot of hub scores for each module
+plot_list <- ModuleFeaturePlot(
+  e11.5,
+  features='scores', # plot the hub gene scores
+)
+
+# stitch together with patchwork
+wrap_plots(plot_list, ncol=6)
+```
+
+Module Correlations
+```{r}
+# plot module correlagram
+ModuleCorrelogram(e11.5)
+```
+
+```{r}
+# get hMEs from seurat object
+MEs <- GetMEs(e11.5, harmonized=TRUE)
+mods <- colnames(MEs); mods <- mods[mods != 'grey']
+
+# add hMEs to Seurat meta-data:
+e11.5@meta.data <- cbind(e11.5@meta.data, MEs)
+```
+
+```{r}
+# plot with Seurat's DotPlot function
+p <- DotPlot(e11.5, features=mods, group.by = 'cluster')
+
+# flip the x/y axes, rotate the axis labels, and change color scheme:
+p <- p +
+  coord_flip() +
+  RotatedAxis() +
+  scale_color_gradient2(high='red', mid='grey95', low='blue')
+
+# plot output
+p
+```
+
+```{r}
+# Plot INH-M4 hME using Seurat VlnPlot function
+p <- VlnPlot(
+  e11.5,
+  features = 'mesenchyme-M1',
+  group.by = 'cluster',
+  pt.size = 0 # don't show actual data points
+)
+
+# add box-and-whisker plots on top:
+p <- p + geom_boxplot(width=.25, fill='white')
+
+# change axis labels and remove legend:
+p <- p + xlab('') + ylab('hME') + NoLegend()
+
+# plot output
+p
+```
+```{r}
+ModuleNetworkPlot(e11.5, mods = "mesenchyme-M1")
+```
+
+```{r}
+# hubgene network
+HubGeneNetworkPlot(
+  e11.5,
+  n_hubs = 6, n_other=3,
+  edge_prop = 0.5,
+  mods = 'all'
+)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
